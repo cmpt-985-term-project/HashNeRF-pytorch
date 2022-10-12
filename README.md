@@ -12,6 +12,15 @@ https://user-images.githubusercontent.com/8559512/154065666-f2eb156c-333c-4de4-9
 
 After training for just 5k iterations (~10 minutes on a single 1050Ti), you start seeing a _crisp_ chair rendering. :)
 
+# Python environment setup
+To configure a Python virtual environment for this project, from within the project root directory execute:
+
+```
+python -m venv venv
+source ./venv/bin/activate
+pip install -r requirements.txt
+```
+
 # Instructions
 Download the nerf-synthetic dataset from here: [Google Drive](https://drive.google.com/drive/folders/1JDdLGDruGNXWnM1eqY1FNL9PlStjaKWi).
 
