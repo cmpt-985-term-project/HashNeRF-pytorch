@@ -5,6 +5,8 @@ import torch.nn.functional as F
 import numpy as np
 import pdb
 
+import nvtx
+
 from utils import get_voxel_vertices
 
 class HashEmbedder(nn.Module):
@@ -55,6 +57,7 @@ class HashEmbedder(nn.Module):
 
         return c
 
+    @nvtx.annotate("Hash Embedding")
     def forward(self, x):
         # x is 3D point position: B x 3
         x_embedded_all = []
@@ -115,6 +118,7 @@ class SHEncoder(nn.Module):
             0.6258357354491761
         ]
 
+    @nvtx.annotate("SH Encoder")
     def forward(self, input, **kwargs):
 
         result = torch.empty((*input.shape[:-1], self.out_dim), dtype=input.dtype, device=input.device)
