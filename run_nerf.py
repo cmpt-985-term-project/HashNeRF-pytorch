@@ -14,6 +14,7 @@ from tqdm import tqdm, trange
 import pickle
 
 import matplotlib.pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
 
 from run_nerf_helpers import *
 from optimizer import MultiOptimizer
@@ -25,7 +26,11 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
+# Performance profiling
 import nvtx
+
+# Experiment tracking
+from clearml import Dataset, Logger
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
@@ -565,6 +570,10 @@ def config_parser():
                         help='options: llff / blender / deepvoxels')
     parser.add_argument("--testskip", type=int, default=8,
                         help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
+    parser.add_argument("--dataset_project", type=str, default='Term Project',
+                        help='ClearML project where dataset is to be found')
+    parser.add_argument("--dataset_name", type=str, default='fern',
+                        help='name of ClearML dataset')
 
     ## deepvoxels flags
     parser.add_argument("--shape", type=str, default='greek',
@@ -608,6 +617,8 @@ def config_parser():
                         help='learning rate')
     parser.add_argument("--tv-loss-weight", type=float, default=1e-6,
                         help='learning rate')
+    parser.add_argument('--use_clearml', action='store_true',
+                        help='use ClearML for experiment tracking')
 
     return parser
 
@@ -617,16 +628,21 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
 
+    if args.use_clearml:
+        datadir = Dataset.get(dataset_name=args.dataset_name, dataset_project=args.dataset_project).get_local_copy()
+    else:
+        datadir = args.datadir
+
     # Load data
     K = None
     if args.dataset_type == 'llff':
-        images, poses, bds, render_poses, i_test, bounding_box = load_llff_data(args.datadir, args.factor,
+        images, poses, bds, render_poses, i_test, bounding_box = load_llff_data(datadir, args.factor,
                                                                   recenter=True, bd_factor=.75,
                                                                   spherify=args.spherify)
         hwf = poses[0,:3,-1]
         poses = poses[:,:3,:4]
         args.bounding_box = bounding_box
-        print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
+        print('Loaded llff', images.shape, render_poses.shape, hwf, datadir)
 
         if not isinstance(i_test, list):
             i_test = [i_test]
@@ -650,9 +666,9 @@ def train():
         print('NEAR FAR', near, far)
 
     elif args.dataset_type == 'blender':
-        images, poses, render_poses, hwf, i_split, bounding_box = load_blender_data(args.datadir, args.half_res, args.testskip)
+        images, poses, render_poses, hwf, i_split, bounding_box = load_blender_data(datadir, args.half_res, args.testskip)
         args.bounding_box = bounding_box
-        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+        print('Loaded blender', images.shape, render_poses.shape, hwf, datadir)
         i_train, i_val, i_test = i_split
 
         near = 2.
@@ -664,7 +680,7 @@ def train():
             images = images[...,:3]
 
     elif args.dataset_type == 'LINEMOD':
-        images, poses, render_poses, hwf, K, i_split, near, far = load_LINEMOD_data(args.datadir, args.half_res, args.testskip)
+        images, poses, render_poses, hwf, K, i_split, near, far = load_LINEMOD_data(datadir, args.half_res, args.testskip)
         print(f'Loaded LINEMOD, images shape: {images.shape}, hwf: {hwf}, K: {K}')
         print(f'[CHECK HERE] near: {near}, far: {far}.')
         i_train, i_val, i_test = i_split
@@ -677,10 +693,10 @@ def train():
     elif args.dataset_type == 'deepvoxels':
 
         images, poses, render_poses, hwf, i_split = load_dv_data(scene=args.shape,
-                                                                 basedir=args.datadir,
+                                                                 basedir=datadir,
                                                                  testskip=args.testskip)
 
-        print('Loaded deepvoxels', images.shape, render_poses.shape, hwf, args.datadir)
+        print('Loaded deepvoxels', images.shape, render_poses.shape, hwf, datadir)
         i_train, i_val, i_test = i_split
 
         hemi_R = np.mean(np.linalg.norm(poses[:,:3,-1], axis=-1))
@@ -804,7 +820,7 @@ def train():
     print('VAL views are', i_val)
 
     # Summary writers
-    # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
+    writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
 
     loss_list = []
     psnr_list = []
@@ -955,20 +971,42 @@ def train():
                     render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
                 print('Saved test set')
 
-
-
             if i%args.i_print==0:
                 tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
-                loss_list.append(loss.item())
-                psnr_list.append(psnr.item())
-                time_list.append(t)
-                loss_psnr_time = {
-                    "losses": loss_list,
-                    "psnr": psnr_list,
-                    "time": time_list
-                }
-                with open(os.path.join(basedir, expname, "loss_vs_time.pkl"), "wb") as fp:
-                    pickle.dump(loss_psnr_time, fp)
+                print(expname, i, psnr.item(), loss.item(), global_step)
+
+                writer.add_scalar('loss', loss.item(), global_step)
+                writer.add_scalar('psnr/coarse train', psnr.item(), global_step)
+                # writer.add_histogram('train/tran', trans.item(), i)
+                #if args.N_importance > 0:
+                #    writer.add_scalar('psnr/fine train', psnr0.item(), global_step)
+
+            if i%args.i_img==0:
+                # Log a rendered validation view to Tensorboard
+                # img_i = np.random.choice(i_val)
+                # Let's use a hard-coded image ID to keep it consistent for the reporting, for now...
+                img_i = 2
+                target = torch.Tensor(images[img_i]).to(device)
+                pose = poses[img_i, :3, :4]
+                with torch.no_grad():
+                    rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, c2w=pose,
+                                                        **render_kwargs_test)
+
+                psnr = mse2psnr(img2mse(rgb, target))
+
+                writer.add_image('rgb', rgb, global_step, dataformats='HWC')
+                writer.add_image('disp', disp[None], global_step)
+                writer.add_image('acc', acc[None], global_step)
+
+                writer.add_scalar('psnr_holdout', psnr.item(), global_step)
+                writer.add_image('rgb_holdout', target, global_step, dataformats='HWC')
+
+                """
+                if  args.N_importance > 0:
+                    writer.add_image('rgb0', extras['rgb0'], global_step, dataformats='HWC')
+                    writer.add_image('disp0', extras['disp0'][None], global_step)
+                    writer.add_image('z_std', extras['z_std'][None], global_step)
+                """
 
             global_step += 1
 
