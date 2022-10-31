@@ -10,3 +10,4 @@ opencv-python
 clearml
 boto3
 nvtx
+kornia
